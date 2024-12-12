@@ -1,0 +1,340 @@
+// Gerekli kütüphaneleri dahil et
+#include "SPI.h" 
+#include "RF24.h" 
+#include "nRF24L01.h" 
+
+// Radyo modülü için pinleri ve ayarları tanımla
+#define CE_PIN 9 
+#define CSN_PIN 10 
+#define INTERVAL_MS_SIGNAL_LOST 1000 
+#define INTERVAL_MS_SIGNAL_RETRY 250 
+// NRF24L01 radyo modülünü başlat
+RF24 radio(CE_PIN, CSN_PIN); 
+const byte address[6] = "00001"; // Radyo iletişimi için adres
+
+// Radyo iletişimi için veri yapısı
+struct payload { 
+  int data1; 
+  int data2; 
+  int data3; 
+  byte data4; 
+  byte data5; 
+}; 
+payload payload; // Veri aktarımı için yapı
+unsigned long lastSignalMillis = 0; // Son sinyal alma zamanını tutan değişken
+
+// Pin ve değişken tanımlamaları
+int verici_arac_hata_mesaji_engel = 38; // Engel hatası için mesaj kodu
+int verici_arac_hata_mesaji_takilma = 49; // Takılma hatası için mesaj kodu
+
+int joys_yatay; // Joystick'ten gelen yatay veri
+int joys_dikey; // Joystick'ten gelen dikey veri
+int joys_buton; // Joystick'ten gelen buton verisi
+int alici_otonom_surus_sinyali = 87; // Otonom sürüş başlatma sinyali
+int alici_otonom_surusten_cikis_sinyali = 88; // Otonom sürüşten çıkış sinyali
+
+// Sol motor için pinler
+#define sol_motor_1 A3 
+#define sol_motor_2 A2
+// Sağ motor için pinler
+#define sag_motor_1 A4
+#define sag_motor_2 A5
+ 
+// Sensör pinleri
+int sag_sensor_echo = 4;// sağ sensör
+int sag_sensor_trigger = 5;// sağ sensör
+
+int sol_sensor_echo = 6;// sol sensör
+int sol_sensor_trigger = 7;// sol sensör
+
+int on_sensor_echo = 2; // Ön sensör
+int on_sensor_trigger = 3; // Ön sensör
+
+int takilma_sayac=0; 
+int takilma_sayaci = 0; 
+int takilma_sayaci_son_durum = 0;
+
+int engel_tanima_sayac = 0;
+int engel_tanima_sayaci = 0; 
+int engel_tanima_sayaci_son_durum = 0; 
+
+int takilma_algilayici_sensor = A0; // Takılma algılayıcı sensör pini
+
+void setup(void)
+{
+  Serial.begin(115200); //Seri iletişimi 115200 hızında başlat
+  radio.begin(); //Radyo modülünü başlat
+  radio.setAutoAck(false); //Otomatik onaylama özelliğini kapalı duruma getir
+  radio.setDataRate(RF24_250KBPS); //Veri aktarım hızını 250 kbps olarak ayarla
+  radio.setPALevel(RF24_PA_MIN); //Güç seviyesini en düşük seviyeye ayarla
+  radio.setPayloadSize(sizeof(payload)); //Veri paketinin boyutunu "payload" yapısının boyutuna göre ayarla
+  radio.openReadingPipe(0, address); //Alıcı modülü için adres tanımla
+  radio.startListening(); //Radyo modülünü dinlemeye başla
+  // Pinleri giriş/çıkış olarak tanımla:
+  pinMode(on_sensor_trigger, OUTPUT);//Ön sensör tetikleyici pini çıkış olarak ayarla
+  pinMode(on_sensor_echo, INPUT);//Ön sensör eko pini giriş olarak ayarla
+
+  pinMode(sol_sensor_trigger, OUTPUT);//Sol sensör tetikleyici pini çıkış olarak ayarla
+  pinMode(sol_sensor_echo, INPUT);//Sol sensör eko pini giriş olarak ayarla
+
+  pinMode(sag_sensor_trigger, OUTPUT);//Sağ sensör tetikleyici pini çıkış olarak ayarla
+  pinMode(sag_sensor_echo, INPUT);//Sağ sensör eko pini giriş olarak ayarla
+
+  //Sol motor pinlerini çıkış olarak ayarla
+  pinMode(sol_motor_1, OUTPUT);
+  pinMode(sol_motor_2, OUTPUT);
+  //Sağ motor pinlerini çıkış olarak ayarla
+  pinMode(sag_motor_1, OUTPUT);
+  pinMode(sag_motor_2, OUTPUT);
+
+  pinMode(takilma_algilayici_sensor, INPUT);// Takılma algılayıcı sensör pinini giriş olarak ayarla
+}
+ 
+void loop(void) {
+  unsigned long currentMillis = millis();//Geçen zamanı milisaniye cinsinden al
+  lastSignalMillis = currentMillis;//Son sinyal alma zamanını güncelle
+
+  // Payload verilerini hazırla
+  payload.data1 = joys_buton;
+  payload.data2 = joys_yatay;
+  payload.data3 = joys_dikey;
+  payload.data4 = alici_otonom_surus_sinyali;
+  payload.data5 = alici_otonom_surusten_cikis_sinyali;
+
+  radio.read(&payload, sizeof(payload));// Radyodan veri okumaya çalış
+
+  // Motor pinlerinin durumunu oku
+  int motor_pin_durumu=analogRead(sol_motor_1) || analogRead(sol_motor_2) || analogRead(sag_motor_1) || analogRead(sag_motor_2);
+  // Sensör ölçümleri yap
+  long on_sensor_zaman, sol_sensor_zaman, sag_sensor_zaman, sag_mesafe, sol_mesafe, on_mesafe;
+
+  // Ön sensörü tetikle ve mesafeyi ölç
+  digitalWrite(on_sensor_trigger, LOW);
+  delayMicroseconds(2);
+  digitalWrite(on_sensor_trigger, HIGH);
+  delayMicroseconds(5);
+  digitalWrite(on_sensor_trigger, LOW);
+  on_sensor_zaman = pulseIn(on_sensor_echo, HIGH);
+  on_mesafe = on_sensor_zaman/29/2;
+
+  // Sol sensörü tetikle ve mesafeyi ölç
+  digitalWrite(sol_sensor_trigger, LOW);
+  delayMicroseconds(2);
+  digitalWrite(sol_sensor_trigger, HIGH);
+  delayMicroseconds(5);
+  digitalWrite(sol_sensor_trigger, LOW);
+  sol_sensor_zaman = pulseIn(sol_sensor_echo, HIGH);
+  sol_mesafe = sol_sensor_zaman/29/2;
+
+  // Sağ sensörü tetikle ve mesafeyi ölç
+  digitalWrite(sag_sensor_trigger, LOW);
+  delayMicroseconds(2);
+  digitalWrite(sag_sensor_trigger, HIGH);
+  delayMicroseconds(5);
+  digitalWrite(sag_sensor_trigger, LOW);
+  sag_sensor_zaman = pulseIn(sag_sensor_echo, HIGH);
+  sag_mesafe = sag_sensor_zaman/29/2;
+
+  // Engel tanıma ve takılma durumlarını kontrol et
+  if (millis() %20000>=18500 && millis() %20000-1500<=20000){//Her 30 saniyede bir
+    if(motor_pin_durumu<=255){//Motorlar hareket etmiyorsa
+      if(engel_tanima_sayaci>=6){//Engel tanıma sayısı 6'dan büyükse
+        while(1){//Sonsuz döngüye gir
+          // Motorları durdur
+          analogWrite(sol_motor_1, 0);
+          analogWrite(sol_motor_2, 0);
+          analogWrite(sag_motor_1, 0);
+          analogWrite(sag_motor_2, 0);
+
+          engel_tanima_sayac==0;// Engel tanıma sayısını sıfırla
+          engel_sayac();// Engel sayacı fonksiyonunu çağır
+
+          lastSignalMillis = currentMillis;// Son sinyal alma zamanını güncelle
+
+          // Payload verilerini hazırla
+          payload.data1 = joys_buton;
+          payload.data2 = joys_yatay;
+          payload.data3 = joys_dikey;
+          payload.data4 = alici_otonom_surus_sinyali;
+          payload.data5 = alici_otonom_surusten_cikis_sinyali;
+
+          radio.read(&payload, sizeof(payload));// Radyodan veri oku
+          if(payload.data1==HIGH){break;}// Joystick düğmesi basılıysa döngüden çık
+        }
+      }else{engel_tanima_sayac==0;}   
+    }
+  }
+  engel_sayac();
+
+  if (millis() %10000>=8500 && millis() %10000-1500<=10000){//Her 5 dakikada bir
+    if(motor_pin_durumu<=255){//Motorlar hareket etmiyorsa
+      if(takilma_sayaci<=4){//Takılma sayısı 4'ten küçükse
+        while(1){ //Sonsuz döngüye gir
+          // Motorları durdur
+          analogWrite(sol_motor_1, 0);
+          analogWrite(sol_motor_2, 0);
+          analogWrite(sag_motor_1, 0);
+          analogWrite(sag_motor_2, 0);
+
+          takilma_sayac==0; // Takılma sayısını sıfırla
+          takil_sayac();// Takılma sayacı fonksiyonunu çağır
+          lastSignalMillis = currentMillis;// Son sinyal alma zamanını güncelle
+
+          // Payload verilerini hazırla
+          payload.data1 = joys_buton;
+          payload.data2 = joys_yatay;
+          payload.data3 = joys_dikey;
+          payload.data4 = alici_otonom_surus_sinyali;
+          payload.data5 = alici_otonom_surusten_cikis_sinyali;
+
+          radio.read(&payload, sizeof(payload));// Radyodan veri oku
+
+          if(payload.data1==HIGH){break;}// Joystick düğmesi basılıysa döngüden çık
+        }
+      }else{takilma_sayac==0;}
+      }
+  }
+  takil_sayac();// Takılma sayacı fonksiyonunu çağır
+  takilma_sayac=digitalRead(takilma_algilayici_sensor);// Takılma sayısını güncelle
+
+  if(on_mesafe >30){// Ön mesafe 30 cm'den büyükse
+    engel_tanima_sayac++;//Engel tanıma sayısını bir artır
+    // Motorları ileri yönde çalıştır
+    analogWrite(sol_motor_1, 255);
+    analogWrite(sol_motor_2, 0);
+    analogWrite(sag_motor_1, 255);
+    analogWrite(sag_motor_2, 0);
+  }else{// Ön mesafe 30 cm'den küçükse
+    // Motorları geriye doğru çalıştır
+    analogWrite(sol_motor_1, 0);
+    analogWrite(sol_motor_2, 255);
+    analogWrite(sag_motor_1, 0);
+    analogWrite(sag_motor_2, 255);
+    delay(500);// 500 milisaniye bekle
+    // Motorları ileri yönde çalıştır
+    analogWrite(sol_motor_1, 255);
+    analogWrite(sol_motor_2, 0);
+    analogWrite(sag_motor_1, 0);
+    analogWrite(sag_motor_2, 255);
+    delay(1000);// 1000 milisaniye bekle
+  }
+
+  // ENGEL KONTROLÜ VE MANEVRA
+  // Sol mesafe 30 cm'den küçük, sağ mesafe 30 cm'den büyük ve ön mesafe 30 cm'den küçük ise:
+  if(sol_mesafe <=30 && sag_mesafe>30 && on_mesafe <=30){
+    engel_tanima_sayac++;// Engel tanıma sayısını artır
+    sag_oto();// Sağa dönüş fonksiyonunu çağır
+  }
+  // Sağ mesafe 30 cm'den küçük, sol mesafe 30 cm'den büyük ve ön mesafe 30 cm'den küçük ise:
+  else if (sag_mesafe <= 30 && sol_mesafe > 30 && on_mesafe <= 30) {
+    engel_tanima_sayac++;  // Engel tanıma sayısını artır
+    sol_oto();             // Sola dönüş fonksiyonunu çağır
+  }
+  // Sağ, sol ve ön mesafeler 30 cm'den küçük ise:
+  else if (sag_mesafe <= 30 && sol_mesafe <= 30 && on_mesafe <= 30) {
+    engel_tanima_sayac++;  // Engel tanıma sayısını artır
+    tam_donus_oto();       // Tam dönüş fonksiyonunu çağır
+  }
+
+  // RADYO KONTROLÜ:
+  while (payload.data5 == 88) {  // Otonom sürüşten çıkış sinyali 88 olmadığı sürece:
+    lastSignalMillis = currentMillis;  // Son sinyal alma zamanını güncelle
+
+    // Payload verilerini hazırla
+    payload.data1 = joys_buton;
+    payload.data2 = joys_yatay;
+    payload.data3 = joys_dikey;
+    payload.data4 = alici_otonom_surus_sinyali;
+    payload.data5 = alici_otonom_surusten_cikis_sinyali;
+
+    radio.read(&payload, sizeof(payload));  // Radyodan veri oku
+
+    // Motorları durdur
+    analogWrite(sol_motor_1, 0);
+    analogWrite(sol_motor_2, 0);
+    analogWrite(sag_motor_1, 0);
+    analogWrite(sag_motor_2, 0);
+
+    // Joystick verilerine göre motorları kontrol et:
+    if (payload.data3 >= 900) {  // Joystick ileri
+      analogWrite(sol_motor_1, 255);
+      analogWrite(sag_motor_1, 255);
+    } else if (payload.data3 <= 200) {  // Joystick geri
+      analogWrite(sol_motor_2, 255);
+      analogWrite(sag_motor_2, 255);
+    } else if (payload.data2 >= 900) {  // Joystick sağa
+      analogWrite(sol_motor_1, 255);
+      analogWrite(sag_motor_2, 255);
+    } else if (payload.data2 <= 200) {  // Joystick sola
+      analogWrite(sol_motor_2, 255);
+      analogWrite(sag_motor_1, 255);
+    }
+
+    if (payload.data4 == 87) {break;}// Otonom sürüş sinyali alınırsa döngüden çık
+  }
+}
+
+void sol_oto() {// Sola dönüş fonksiyonu
+  // Sol motorları ileri yönde çalıştır
+  analogWrite(sol_motor_1, 0);
+  analogWrite(sol_motor_2, 255);
+  // Sağ motorları geri yönde çalıştır
+  analogWrite(sag_motor_1, 0);
+  analogWrite(sag_motor_2, 255);
+  delay(500);// 500 milisaniye bekle
+  // Sol motorları geri yönde çalıştır
+  analogWrite(sol_motor_1, 0);
+  analogWrite(sol_motor_2, 255);
+  // Sağ motorları ileri yönde çalıştır
+  analogWrite(sag_motor_1, 255);
+  analogWrite(sag_motor_2, 0);
+  delay(500);// 500 milisaniye bekle
+}
+ 
+void sag_oto() {// Sağa dönüş fonksiyonu
+  // Sol motorları geri yönde çalıştır
+  analogWrite(sol_motor_1, 255);
+  analogWrite(sol_motor_2, 0);
+  // Sağ motorları ileri yönde çalıştır
+  analogWrite(sag_motor_1, 0);
+  analogWrite(sag_motor_2, 255);
+  delay(500);// 500 milisaniye bekle
+  // Sol motorları ileri yönde çalıştır
+  analogWrite(sol_motor_1, 0);
+  analogWrite(sol_motor_2, 255);
+  // Sağ motorları geri yönde çalıştır
+  analogWrite(sag_motor_1, 255);
+  analogWrite(sag_motor_2, 0);
+  delay(500);  // 500 milisaniye bekle
+}
+ 
+void tam_donus_oto(){// Tam dönüş fonksiyonu
+  // Sol motorları ileri yönde çalıştır
+  analogWrite(sol_motor_1, 255);
+  analogWrite(sol_motor_2, 0);
+  // Sağ motorları geri yönde çalıştır
+  analogWrite(sag_motor_1, 0);
+  analogWrite(sag_motor_2, 255);
+  delay(1200);// 1200 milisaniye bekle
+}
+ 
+void engel_sayac(){// Robotun önündeki engellerin sayısını izleme fonksiyonu.
+  if (engel_tanima_sayac != engel_tanima_sayaci_son_durum){ // Her 5 milisaniyede bir çalış
+    if (engel_tanima_sayac == HIGH){// Engele çarpıldığında sayacı bir artırır.
+      engel_tanima_sayaci++; 
+    } 
+  delay(5); 
+  } 
+  engel_tanima_sayaci_son_durum = engel_tanima_sayac;
+}
+ 
+void takil_sayac(){// Takılma sayacı fonksiyonu
+  takilma_sayac=digitalRead(takilma_algilayici_sensor);// Sensörden veri alır.
+  if (takilma_sayac != takilma_sayaci_son_durum){// Geçmiş durumla karşılaştırır.
+    if (takilma_sayac == HIGH){// Engele takılmışsa, sayacı bir artırır.
+      takilma_sayaci++; 
+    } 
+  delay(5);// 5 milisaniye bekler.
+  } 
+  takilma_sayaci_son_durum = takilma_sayac;// Değişiklik varsa, yeni durumu kaydeder.
+}
