@@ -1,1 +1,2 @@
-# TasiyiciRobot
+# Taşıyıcı Robot
+Bu proje, özellikle taşımacılık ve robotik uygulamalara yönelik genel amaçlı bir taşıyıcı robot sisteminin tasarımını ve üretimini kapsamaktadır. Robot, 1 kilogramlık yükleri taşımak üzere tasarlanmış, hem düz zeminlerde hem de engebeli arazilerde hareket edebilecek şekilde yapılandırılmıştır. Sistem, otonom ve manuel kontrol modlarına sahiptir. Kontrol için Arduino Uno mikrodenetleyicisi, NRF24L01 kablosuz haberleşme modülü, ultrasonik mesafe sensörleri ve IR alıcı-verici sensör modülleri gibi elektronik bileşenler entegre edilmiştir. Ayrıca, redüktörlü motorlar ve tank tipi tekerleklerle robotun farklı yüzeylerde stabil bir şekilde hareket etmesi sağlanmıştır.
