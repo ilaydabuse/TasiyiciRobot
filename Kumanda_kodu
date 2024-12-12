@@ -1,0 +1,146 @@
+//kumanda
+// Gerekli kütüphaneleri dahil ediyoruz
+#include <LiquidCrystal_I2C.h>  // I2C LCD ekranı kontrol etmek için kütüphane
+#include "SPI.h"                // SPI iletişim için kütüphane
+#include "RF24.h"               // NRF24L01 radyo modülünü kullanmak için kütüphane
+#include "nRF24L01.h"           // NRF24L01 için ek tanımlamalar
+
+#define CE_PIN 9                // NRF24L01 modülünün CE pini
+#define CSN_PIN 10               // NRF24L01 modülünün CSN pini
+
+#define INTERVAL_MS_TRANSMISSION 250  // Veri iletimi arasındaki aralık, 250 ms
+
+RF24 radio(CE_PIN, CSN_PIN);// NRF24L01 radyo modülünü başlatıyoruz
+
+const byte address[6] = "00001";// Haberleşme için adres belirleyelim
+
+// Veriyolu üzerinden gönderilecek veri yapısı
+struct payload {
+  int data1;
+  int data2;
+  int data3;
+  byte data4;
+  byte data5;
+};
+
+payload payload;// Veriyolu üzerinden gönderilecek veri değişkeni
+
+// Hata mesajları ve sinyalleri için değişkenler
+int alici_arac_hata_mesaji_engel = 38;  // Araç engel algıladığında gönderilen hata mesajı kodu
+int alici_arac_hata_mesaji_takilma = 49; // Araç takıldığında gönderilen hata mesajı kodu
+int verici_otonom_surus_sinyali = 87;   // Otonom sürüş başlatma sinyali
+int verici_otonom_surusten_cikis_sinyali = 88; // Otonom sürüşten çıkış sinyali
+
+// Joystick pinleri
+int joys_dik = A2;  // Joystick dikey ekseni
+int joys_yat = A1;  // Joystick yatay ekseni
+int joys_but = A0;  // Joystick butonu
+
+// Joystick değerlerini tutmak için değişkenler
+int joys_buton;
+int joys_dikey;
+int joys_yatay;
+
+// LCD ekranda yazı kaydırma için değişkenler
+int scrollPosition = 0;
+int scrollPosition2 = 0;
+int scrollPosition3 = 0;
+
+void setup() {
+  Serial.begin(115200);  // Seri iletişimi başlat
+
+  // Radyo modülünü ayarla
+  radio.begin();
+  radio.setAutoAck(false);  // Otomatik onaylama kapalı
+  radio.setDataRate(RF24_250KBPS);  // Veri aktarım hızı 250 kbps
+  radio.setPALevel(RF24_PA_MAX);  // Güç seviyesi maksimum
+  radio.setPayloadSize(sizeof(payload));  // Veri paketi boyutu
+  radio.openWritingPipe(address);  // Veri göndermek için adresi ayarla
+
+  // Joystick pinlerini giriş olarak ayarla
+  pinMode(joys_dik, INPUT);
+  pinMode(joys_yat, INPUT);
+  pinMode(joys_but, INPUT);
+
+  lcd.begin();  // LCD ekranı başlat
+  lcd.backlight();  // Arka ışığı aç
+
+  // LCD ekranda açılış mesajları göster
+  lcd.home();
+  lcd.setCursor(4, 0);
+  lcd.print("Veriler");
+  lcd.setCursor(3, 1);
+  lcd.print("Aliniyor...");
+  delay(500);
+  lcd.clear();
+  lcd.setCursor(2, 0);
+  lcd.print("Baglaniyor...");
+  delay(500);
+  lcd.clear();
+  lcd.setCursor(0, 1);
+  lcd.print("=>=>Baglandi<=<=");
+  delay(500);
+  lcd.clear();
+}
+
+void loop() {
+  // Joystick değerlerini oku
+  joys_buton = digitalRead(joys_but);
+  joys_dikey = analogRead(joys_dik);
+  joys_yatay = analogRead(joys_yat);
+
+  // LCD ekrana "Araç Otonomda" mesajını yazdır
+  lcd.setCursor(0, 0);
+  lcd.print("Arac Otonomda");
+  delay(50);
+  lcd.clear();
+
+  // Veri paketini oluştur ve gönder
+  payload.data1 = digitalRead(joys_but); 
+  payload.data2 = analogRead(joys_yat); 
+  payload.data3 = analogRead(joys_dik);  
+  payload.data5 = verici_otonom_surusten_cikis_sinyali;  // Otonom sürüşten çıkış sinyali gönder
+
+  radio.write(&payload, sizeof(payload));  // Veri paketini gönder
+  delay(INTERVAL_MS_TRANSMISSION);  // Gönderimler arasında bekle
+
+  // Joystick butonu basılı ve joystick sol alt köşede ise manuel sürüşe geç
+  while (joys_buton == HIGH && joys_dikey <= 200 && joys_yatay <= 200) {
+    basadon:  // Döngü etiketi
+    lcd.setCursor(0, 0);
+    lcd.print("manuel surustuseniz");  // LCD ekrana manuel sürüş mesajını yazdır
+
+    joys_yon_atama();    // Joystick yön atama fonksiyonunu çalıştır
+
+    // Veri paketini oluştur ve gönder
+    payload.data1 = digitalRead(joys_but); 
+    payload.data2 = analogRead(joys_yat); 
+    payload.data3 = analogRead(joys_dik);  
+    payload.data4 = verici_otonom_surus_sinyali;  // Otonom sürüş başlatma sinyali gönder
+
+    radio.write(&payload, sizeof(payload));  // Veri paketini gönder
+
+    // Seri iletişime veri yazdır
+    Serial.print("Data1:"); 
+    Serial.println(payload.data1); 
+    Serial.print("Data2:"); 
+    Serial.println(payload.data2); 
+    Serial.println("Sent"); 
+    delay(INTERVAL_MS_TRANSMISSION);  // Gönderimler arasında bekle
+
+    // Joystick butonu basılı ve joystick sol üst köşede ise otonom sürüşe dön
+    if (joys_buton == HIGH && joys_dikey >= 900 && joys_yatay <= 200) {
+      break;  // Döngüden çık
+    }
+
+    // Döngüyü baştan başlat
+    goto basadon;
+  }
+}
+
+void joys_yon_atama() {
+  // Joystick değerlerini oku
+  joys_buton = digitalRead(joys_but);
+  joys_dikey = analogRead(joys_dik);
+  joys_yatay = analogRead(joys_yat);
+}
